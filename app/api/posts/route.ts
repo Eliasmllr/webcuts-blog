@@ -1,17 +1,32 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { Redis } from '@upstash/redis';
+
+const redis = new Redis({
+  url: process.env.KV_REST_API_URL!,
+  token: process.env.KV_REST_API_TOKEN!,
+});
 
 const API_SECRET = process.env.BLOG_API_KEY || '';
-
-let posts: any[] = [];
+const POSTS_KEY = 'blog:posts';
 
 export async function GET() {
-  return NextResponse.json({
-    success: true,
-    count: posts.length,
-    posts: posts.sort((a, b) =>
-      new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime()
-    ),
-  });
+  try {
+    const posts = await redis.get(POSTS_KEY) || [];
+    const sortedPosts = Array.isArray(posts)
+      ? posts.sort((a: any, b: any) =>
+          new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime()
+        )
+      : [];
+
+    return NextResponse.json({
+      success: true,
+      count: sortedPosts.length,
+      posts: sortedPosts,
+    });
+  } catch (error) {
+    console.error('GET Error:', error);
+    return NextResponse.json({ success: false, error: 'Database error' }, { status: 500 });
+  }
 }
 
 export async function POST(request: NextRequest) {
@@ -20,19 +35,13 @@ export async function POST(request: NextRequest) {
     const token = authHeader?.replace('Bearer ', '');
 
     if (!token || token !== API_SECRET) {
-      return NextResponse.json(
-        { success: false, error: 'Unauthorized' },
-        { status: 401 }
-      );
+      return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
     }
 
     const body = await request.json();
 
     if (!body.title || !body.excerpt || !body.category) {
-      return NextResponse.json(
-        { success: false, error: 'Missing required fields: title, excerpt, category' },
-        { status: 400 }
-      );
+      return NextResponse.json({ success: false, error: 'Missing required fields' }, { status: 400 });
     }
 
     const post = {
@@ -52,24 +61,19 @@ export async function POST(request: NextRequest) {
       tags: body.tags || [],
     };
 
+    const existingPosts = await redis.get(POSTS_KEY) || [];
+    const posts = Array.isArray(existingPosts) ? existingPosts : [];
     posts.push(post);
+    await redis.set(POSTS_KEY, posts);
 
     return NextResponse.json({
       success: true,
       message: 'Post created',
-      post: {
-        id: post.id,
-        slug: post.slug,
-        title: post.title,
-        url: `/blog/${post.slug}`,
-      },
+      post: { id: post.id, slug: post.slug, title: post.title, url: `/blog/${post.slug}` },
     }, { status: 201 });
 
   } catch (error) {
-    console.error('API Error:', error);
-    return NextResponse.json(
-      { success: false, error: 'Internal server error' },
-      { status: 500 }
-    );
+    console.error('POST Error:', error);
+    return NextResponse.json({ success: false, error: 'Internal server error' }, { status: 500 });
   }
 }
